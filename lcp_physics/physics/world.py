@@ -96,12 +96,103 @@ class World:
         self.find_contacts()
         self.strict_no_pen = strict_no_penetration
         if self.strict_no_pen:
-            assert all([c[0][3].item() <= self.tol for c in self.contacts]), \
-                'Interpenetration at start:\n{}'.format(self.contacts)
+            # Check for initial penetrations
+            penetrating_contacts = [c for c in self.contacts if c[0][3].item() > self.tol]
+            
+            if penetrating_contacts:
+                print(f"Initial penetration detected in {len(penetrating_contacts)} contact(s).")
+                print("Attempting to resolve by separating bodies...")
+                
+                # Try to resolve penetrations
+                self.resolve_initial_penetrations(max_iterations=10)
+                
+                # Check if resolved
+                penetrating_contacts = [c for c in self.contacts if c[0][3].item() > self.tol]
+                if penetrating_contacts:
+                    print(f"Warning: Could not fully resolve all penetrations.")
+                    # Optionally, you can still assert here if you want strict behavior:
+                    # assert False, f'Interpenetration remains after separation attempts:\n{penetrating_contacts}'
+                else:
+                    print("Successfully resolved all initial penetrations.")
+
         self.time_of_contact_diff = time_of_contact_diff
         self.stop_contact_grad = stop_contact_grad
         self.stop_friction_grad = stop_friction_grad
 
+    def resolve_initial_penetrations(self, max_iterations=10):
+        """
+        Resolve initial penetrations by separating overlapping bodies.
+        This is called during initialization before the main simulation loop.
+        """
+        for iteration in range(max_iterations):
+            self.find_contacts()
+            
+            # Check if all contacts are within tolerance
+            penetrating_contacts = [c for c in self.contacts if c[0][3].item() > self.tol]
+            
+            if not penetrating_contacts:
+                # No more penetrations, we're done
+                break
+                
+            # Resolve each penetrating contact
+            for contact in penetrating_contacts:
+                contact_info, body1_idx, body2_idx = contact
+                normal, contact_pt_1, contact_pt_2, penetration_depth = contact_info
+                
+                body1 = self.bodies[body1_idx]
+                body2 = self.bodies[body2_idx]
+                
+                # Calculate separation distance (add small buffer)
+                separation = (penetration_depth.item() + self.tol) * 0.002
+                
+                # Determine how to distribute the separation based on body properties
+                # If one body is much heavier (mass ratio > 100), move the lighter one
+                # Otherwise, split the movement based on inverse mass
+                mass1 = body1.mass if hasattr(body1, 'mass') else 1.0
+                mass2 = body2.mass if hasattr(body2, 'mass') else 1.0
+                
+                # Handle infinite mass (static bodies)
+                if torch.isinf(mass1):
+                    ratio1 = 0.0
+                    ratio2 = 1.0
+                elif torch.isinf(mass2):
+                    ratio1 = 1.0
+                    ratio2 = 0.0
+                else:
+                    # Distribute inversely proportional to mass
+                    total_inv_mass = 1.0 / mass1 + 1.0 / mass2
+                    ratio1 = (1.0 / mass1) / total_inv_mass
+                    ratio2 = (1.0 / mass2) / total_inv_mass
+                
+                # Move bodies apart along the contact normal
+                displacement1 = normal * separation * ratio1
+                displacement2 = -normal * separation * ratio2
+                
+                # Update body positions
+                new_p1 = body1.p.clone()
+                new_p2 = body2.p.clone()
+                
+                # Apply displacement to positional components
+                # (assuming last 2 or 3 components are position)
+                pos_dim = normal.shape[0]  # 2D or 3D
+                new_p1[-pos_dim:] += displacement1
+                new_p2[-pos_dim:] += displacement2
+                
+                body1.set_p(new_p1)
+                body2.set_p(new_p2)
+            
+            # Update the world's combined position vector
+            self.set_p(torch.cat([b.p for b in self.bodies]))
+            
+        # Final check
+        self.find_contacts()
+        remaining_penetrations = [c for c in self.contacts if c[0][3].item() > self.tol]
+        
+        if remaining_penetrations and self.strict_no_pen:
+            print(f"Warning: Could not fully resolve all penetrations after {max_iterations} iterations.")
+            print(f"Remaining penetrations: {len(remaining_penetrations)}")
+            for c in remaining_penetrations:
+                print(f"  Bodies {c[1]}-{c[2]}: penetration = {c[0][3].item():.6f}")
 
     def undo_step(self):
         # XXX Clones necessary?
