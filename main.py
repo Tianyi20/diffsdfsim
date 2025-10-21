@@ -57,21 +57,20 @@ def callback_vel(world):
         v_list.append(b.v.reshape(-1))
     return torch.cat(v_list, dim=0)
 
-def make_diff_world(num_bodies,  sdf_bodies, bodies_pos, bodie_scales):
+def make_diff_world(num_bodies,  sdf_bodies, bodies_pos, bodies_scales, bodies_com):
 
     bodies = []
     joints = []
     friction_coeff = 0.15
 
-    optimized_poses = []
-
     for idx in range(num_bodies):
         # Create SDF grid body
         body = SDFGrid3D(
             pos=bodies_pos[idx],
-            scale=bodie_scales[idx],
+            scale=bodies_scales[idx],
             sdf=sdf_bodies[idx],
             vel=(0, 0, 0),
+            COM=bodies_com[idx],
             mass=0.5,
             thickness=0.0,   
         )
@@ -151,7 +150,8 @@ if __name__ == "__main__":
 
     sdf_bodies = []
     bodies_pos = []
-    bodie_scales = []
+    bodies_scales = []
+    bodies_com = []
     for mesh_path in objects_path:
         sdf_field, translation, scale, unit_mesh = kal_mesh_to_voxel(mesh_path= mesh_path, voxel_resolution= 64)
         print(f"[mesh to sdf]: Done mesh to SDF by kaolin to mesh {mesh_path}")
@@ -159,24 +159,35 @@ if __name__ == "__main__":
         voxels = sdf_field.squeeze(0).squeeze(0).permute(0, 2, 1).detach().to(dtype=Defaults3D.DTYPE, device=Defaults3D.DEVICE)
         voxels = torch.flip(voxels, dims=[0])
 
+        scale = 1/scale
+
         # ic(voxels)
         pose = torch.tensor( np.array([translation[0], -1 *  translation[2],-1 *  translation[1]]), 
                             dtype=Defaults3D.DTYPE, 
                             device=Defaults3D.DEVICE, 
+                            requires_grad=False)
+        
+        com = torch.tensor( np.array([0.0, 0.0, 0.0]), 
+                            dtype=Defaults3D.DTYPE, 
+                            device=Defaults3D.DEVICE,
                             requires_grad=True)
         
         sdf_bodies.append(voxels)
         bodies_pos.append(pose)
-        scale = 1/scale
-        bodie_scales.append(scale)
+        bodies_scales.append(scale)
+        bodies_com.append(com)
     
     start_poses = [p.clone() for p in bodies_pos]
-    optimizer = torch.optim.Adam(bodies_pos, lr=8e-3)
+    start_coms = [c.clone() for c in bodies_com]
+    # optimizer = torch.optim.Adam(bodies_pos, lr=4e-3)
+
+    COM_optimizer = torch.optim.Adam(bodies_com, lr=1e-2)
 
     for e in range(20):
-        optimizer.zero_grad()
+        # optimizer.zero_grad()
+        COM_optimizer.zero_grad()
         output_dir = "world"
-        world  = make_diff_world(num_bodies = len(sdf_bodies), sdf_bodies = sdf_bodies, bodies_pos = bodies_pos, bodie_scales = bodie_scales)
+        world  = make_diff_world(num_bodies = len(sdf_bodies), sdf_bodies = sdf_bodies, bodies_pos = bodies_pos, bodies_scales = bodies_scales, bodies_com = bodies_com)
 
         recorder = Recorder3D(dt=Defaults3D.DT, scene=scene, path=os.path.join(output_dir, f'{e}'), save_to_disk=True)
 
@@ -187,6 +198,9 @@ if __name__ == "__main__":
         loss = sum((v ** 2).sum() for v in vel_traj)
         ic(loss)
         loss.backward()
-        optimizer.step()
+        # optimizer.step()
+        COM_optimizer.step()
         ic("start poses:", start_poses)
         ic("optimized poses", bodies_pos)
+        ic("start COMs:", start_coms)
+        ic("optimized COMs", bodies_com)
