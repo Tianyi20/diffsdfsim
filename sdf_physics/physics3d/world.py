@@ -22,6 +22,7 @@ import torch
 from lcp_physics.physics import World
 from lcp_physics.physics.utils import get_instance
 from torch.nn.functional import normalize
+from pytorch3d.transforms import quaternion_apply
 
 from . import contacts as contacts_module
 from .utils import Defaults3D, orthogonal, get_colormap
@@ -45,13 +46,29 @@ class World3D(World):
                          stop_friction_grad=stop_friction_grad)
         self.static_inverse = False
 
-    def M(self):
+    def M(self): ## Mass INERTIA matrix of the whole system
         self._M = torch.block_diag(*[b.M for b in self.bodies])
         return self._M
 
     def set_p(self, new_p):
         for i, b in enumerate(self.bodies):
             b.set_p(new_p[i * (self.vec_len + 1):(i + 1) * (self.vec_len + 1)])
+
+    # def Jc(self): ## contact jacobin
+    #     Jc = self._M.new_zeros(len(self.contacts), self.vec_len * len(self.bodies))
+    #     for i, contact in enumerate(self.contacts):
+    #         if self.stop_contact_grad:
+    #             c = [c.detach() for c in contact[0]]
+    #         else:
+    #             c = contact[0]
+    #         i1 = contact[1]
+    #         i2 = contact[2]
+    #         J1 = torch.cat([torch.cross(c[1], c[0]), c[0]])
+    #         J2 = -torch.cat([torch.cross(c[2], c[0]), c[0]])
+    #         Jc[i, i1 * self.vec_len:(i1 + 1) * self.vec_len] = J1
+    #         Jc[i, i2 * self.vec_len:(i2 + 1) * self.vec_len] = J2
+
+    #     return Jc
 
     def Jc(self):
         Jc = self._M.new_zeros(len(self.contacts), self.vec_len * len(self.bodies))
@@ -62,12 +79,42 @@ class World3D(World):
                 c = contact[0]
             i1 = contact[1]
             i2 = contact[2]
-            J1 = torch.cat([torch.cross(c[1], c[0]), c[0]])
-            J2 = -torch.cat([torch.cross(c[2], c[0]), c[0]])
+            J1 = torch.cat([torch.cross(c[1] - quaternion_apply(self.bodies[i1].rot, self.bodies[i1].com), c[0]), c[0]])
+            J2 = -torch.cat([torch.cross(c[2]- quaternion_apply(self.bodies[i1].rot, self.bodies[i2].com), c[0]), c[0]])
             Jc[i, i1 * self.vec_len:(i1 + 1) * self.vec_len] = J1
             Jc[i, i2 * self.vec_len:(i2 + 1) * self.vec_len] = J2
-
         return Jc
+    
+    # def Jf(self): ## friction Jacobian
+
+    #     Jf = self._M.new_zeros(len(self.contacts) * self.fric_dirs,
+    #                            self.vec_len * len(self.bodies))
+    #     for i, contact in enumerate(self.contacts):
+    #         if self.stop_friction_grad:
+    #             c = [c.detach() for c in contact[0]]  # c = (normal, contact_pt_1, contact_pt_2)
+    #         else:
+    #             c = contact[0]
+    #         i1 = contact[1]  # body 1 index
+    #         i2 = contact[2]  # body 2 index
+
+    #         dir1 = normalize(orthogonal(c[0]), dim=0)
+    #         dir2 = normalize(torch.cross(dir1, c[0]), dim=0)
+    #         dirs = torch.stack([dir1, dir2])
+    #         if self.fric_dirs == 8:
+    #             dir3 = normalize(dir1 + dir2, dim=0)
+    #             dir4 = normalize(torch.cross(dir3, c[0]), dim=0)
+
+    #             dirs = torch.cat([dirs,
+    #                               torch.stack([dir3, dir4])
+    #                               ], dim=0)
+    #         dirs = torch.cat([dirs, -dirs], dim=0)
+
+    #         J1 = torch.cat([torch.cross(c[1].expand(self.fric_dirs, -1), dirs), dirs], dim=1)
+    #         J2 = torch.cat([torch.cross(c[2].expand(self.fric_dirs, -1), dirs), dirs], dim=1)
+
+    #         Jf[i * self.fric_dirs:(i + 1) * self.fric_dirs, i1 * self.vec_len:(i1 + 1) * self.vec_len] = J1
+    #         Jf[i * self.fric_dirs:(i + 1) * self.fric_dirs, i2 * self.vec_len:(i2 + 1) * self.vec_len] = -J2
+    #     return Jf
 
     def Jf(self):
 
@@ -92,13 +139,13 @@ class World3D(World):
                                   torch.stack([dir3, dir4])
                                   ], dim=0)
             dirs = torch.cat([dirs, -dirs], dim=0)
-
-            J1 = torch.cat([torch.cross(c[1].expand(self.fric_dirs, -1), dirs), dirs], dim=1)
-            J2 = torch.cat([torch.cross(c[2].expand(self.fric_dirs, -1), dirs), dirs], dim=1)
+            J1 = torch.cat([torch.cross((c[1]- quaternion_apply(self.bodies[i1].rot, self.bodies[i1].com)).expand(self.fric_dirs, -1), dirs), dirs], dim=1)
+            J2 = torch.cat([torch.cross((c[2]- quaternion_apply(self.bodies[i1].rot, self.bodies[i2].com)).expand(self.fric_dirs, -1), dirs), dirs], dim=1)
 
             Jf[i * self.fric_dirs:(i + 1) * self.fric_dirs, i1 * self.vec_len:(i1 + 1) * self.vec_len] = J1
             Jf[i * self.fric_dirs:(i + 1) * self.fric_dirs, i2 * self.vec_len:(i2 + 1) * self.vec_len] = -J2
         return Jf
+
 
     def save_state(self):
         raise NotImplementedError
@@ -112,9 +159,12 @@ class World3D(World):
 
 def run_world(world, fixed_dt=False, animation_dt=None, run_time=10, print_time=True,
               scene=None, recorder=None, render_forces=False, render_torques=False, force_col=(1., 1., 1., 0.5),
-              torque_col=(1., 1., 1., 0.5), force_scale=1., torque_scale=1.):
+              torque_col=(1., 1., 1., 0.5), force_scale=1., torque_scale=1., on_step=None):
     """Helper function to run a simulation forward once a world is created.
     """
+
+
+    outputs = [] ## new callback function outputs
     # If in batched mode don't display simulation
     if hasattr(world, 'worlds'):
         scene = None
@@ -127,9 +177,9 @@ def run_world(world, fixed_dt=False, animation_dt=None, run_time=10, print_time=
 
     if animation_dt is None:
         animation_dt = float(world.dt)
-    elapsed_time = 0.
+    elapsed_time = 0. #真实世界流逝的时间（挂钟时间）
     prev_frame_time = -animation_dt
-    start_time = time.time()
+    start_time = time.time()#真实世界开始模拟的时间（挂钟时间）
 
     seg_node_map = {}
     colormap = get_colormap()
@@ -187,9 +237,16 @@ def run_world(world, fixed_dt=False, animation_dt=None, run_time=10, print_time=
     if scene is not None:
         elapsed_time, prev_frame_time = render_step(elapsed_time, prev_frame_time)
 
+    i = 0 ## step counter
     while world.t < run_time:
+        i += 1
+        print("step counter:", i)
         world.step(fixed_dt=fixed_dt)
-
+        ## new callback function
+        if on_step is not None:
+            out =  on_step(world)
+            if out is not None:
+                outputs.append(out)
         if scene is not None:
             if v is not None and not v.is_active:
                 break
@@ -197,9 +254,10 @@ def run_world(world, fixed_dt=False, animation_dt=None, run_time=10, print_time=
 
         elapsed_time = time.time() - start_time
         if print_time:
-            print('\r {} / {}  {} '.format(world.t, elapsed_time,
-                                           1 / animation_dt), end='')
+            print('\r {} / {}  {} '.format(world.t, elapsed_time, animation_dt), end='')
     if v is not None:
         v.close_external()
         for node in scene.mesh_nodes.copy():
             scene.remove_node(node)
+
+    return outputs

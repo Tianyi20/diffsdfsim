@@ -400,7 +400,7 @@ class Body3D(Body):
     """
 
     def __init__(self, pos, vel=(0, 0, 0, 0, 0, 0), mass=1, restitution=Defaults3D.RESTITUTION,
-                 fric_coeff=Defaults3D.FRIC_COEFF, eps=Defaults3D.EPSILON,
+                 fric_coeff=Defaults3D.FRIC_COEFF, eps=Defaults3D.EPSILON, COM = (0,0,0),
                  col=(255, 255, 255), thickness=1, smooth=False, is_transparent=False):
         # get base tensor to define dtype, device and layout for others
         self._set_base_tensor(locals().values())
@@ -440,6 +440,10 @@ class Body3D(Body):
 
         self.col = col
         self.thickness = thickness
+
+        ## new center of mass
+
+        self.com = get_tensor(COM, base_tensor=self._base_tensor)
 
         if all([isinstance(c, int) for c in col]):
             color = [c / 255. for c in col]
@@ -595,7 +599,7 @@ class Body3D(Body):
 
 class Mesh3D(Body3D):
     def __init__(self, pos, verts, faces, vel=(0, 0, 0, 0, 0, 0), mass=1,
-                 restitution=Defaults3D.RESTITUTION, fric_coeff=Defaults3D.FRIC_COEFF, eps=Defaults3D.EPSILON,
+                 restitution=Defaults3D.RESTITUTION, fric_coeff=Defaults3D.FRIC_COEFF, eps=Defaults3D.EPSILON, COM = (0,0,0),
                  col=(255, 255, 255), thickness=1, smooth=False, is_transparent=False):
         # self._set_base_tensor(locals().values())
         self._base_tensor = get_tensor(0, base_tensor=None)
@@ -603,7 +607,7 @@ class Mesh3D(Body3D):
         self.verts = verts
         self.faces = faces
 
-        super().__init__(pos=pos, vel=vel, mass=mass, restitution=restitution, fric_coeff=fric_coeff, eps=eps,
+        super().__init__(pos=pos, vel=vel, mass=mass, restitution=restitution, fric_coeff=fric_coeff, eps=eps, COM = COM,
                          col=col, thickness=thickness, smooth=smooth, is_transparent=is_transparent)
 
         if pos.size(0) != 3:
@@ -626,7 +630,7 @@ class Mesh3D(Body3D):
 
 class SDF3D(Body3D):
     def __init__(self, pos, scale, sdf_func, params, grad_func=None, vel=(0, 0, 0, 0, 0, 0), mass=1,
-                 restitution=Defaults3D.RESTITUTION, fric_coeff=Defaults3D.FRIC_COEFF, eps=Defaults3D.EPSILON,
+                 restitution=Defaults3D.RESTITUTION, fric_coeff=Defaults3D.FRIC_COEFF, eps=Defaults3D.EPSILON, COM=(0, 0, 0),
                  col=(255, 255, 255), thickness=1, smooth=False, is_transparent=False):
         self._set_base_tensor(locals().values())
         self.scale = get_tensor(scale, base_tensor=self._base_tensor)
@@ -637,7 +641,7 @@ class SDF3D(Body3D):
 
         self.verts, self.faces = self._create_mesh()
 
-        super().__init__(pos=pos, vel=vel, mass=mass, restitution=restitution, fric_coeff=fric_coeff, eps=eps,
+        super().__init__(pos=pos, vel=vel, mass=mass, restitution=restitution, fric_coeff=fric_coeff, eps=eps, COM=COM,
                          col=col, thickness=thickness, smooth=smooth, is_transparent=is_transparent)
 
         if pos.size(0) != 3:
@@ -762,13 +766,13 @@ class SDF3D(Body3D):
 
 class SDFGrid3D(SDF3D):
     def __init__(self, pos, scale, sdf, vel=(0, 0, 0), mass=1, restitution=Defaults3D.RESTITUTION,
-                 fric_coeff=Defaults3D.FRIC_COEFF, eps=Defaults3D.EPSILON,
+                 fric_coeff=Defaults3D.FRIC_COEFF, eps=Defaults3D.EPSILON, COM=(0, 0, 0),
                  col=(255, 255, 255), thickness=1, smooth=False, is_transparent=False):
         self._set_base_tensor(locals().values())
         self.sdf = get_tensor(sdf, base_tensor=self._base_tensor)
 
         super().__init__(pos, scale, sdf_func=DiffGridSDF().apply, params=[self.sdf], grad_func=grid_sdf_grad, vel=vel,
-                         mass=mass, restitution=restitution, fric_coeff=fric_coeff, eps=eps, col=col,
+                         mass=mass, restitution=restitution, fric_coeff=fric_coeff, eps=eps, col=col, COM=COM,
                          thickness=thickness, smooth=smooth, is_transparent=is_transparent)
 
     def _diff_marching_cubes(self, sdf_func):
